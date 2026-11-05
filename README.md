@@ -25,12 +25,21 @@ unless masa grants it. Until then it ships from this repo for personal use; entr
 
 ## Status
 - [x] Phase 0: upstream mapping (this README)
-- [x] Phase 1: schematic data model + .litematic (NBT) reader/writer, multi-region container; 9 unit tests (crate `horizon-mod-litematica`, `src/litematic.rs` + `src/nbt.rs`). Format details verified against litemapy (SmylerMC/litemapy): palette bit width = max(ceil(log2(palette_len)), 2), continuous LSB-first packing across i64 words, y-major block indices, signed Size encoding.
-- [ ] Phase 2: verifier, material lists, placements
+- [x] Phase 1: schematic data model + .litematic (NBT) reader/writer, multi-region container (9 tests)
+- [x] Phase 2: material lists, verifier (wrong block/state/extra), placements (move/rotate/mirror)
+- [x] Phase 3: ghost-block overlay (overlay.rs logic, runtime.rs render glue via native_world_primitives,
+      /litematica command hook: load <path> [x y z] / clear / status; 24/24 unit tests; compiles in-tree
+      at Horizon 489a1334)
+- [ ] Phase 4: printer (placement legality via Horizon placement logic, bottom-up order)
+- [ ] Phase 5: selection tool, saving own .litematic, menus (M), hotkeys, pick-block, highlights
 
-## Degradations tracked on horizon-rust/horizon
-Phase 1 is pure logic with no Horizon surface needed yet. Phases 3-5 (ghost-block
-overlay rendering, printer placement legality, selection tool/menus/hotkeys) ride the
-tracked API issues: world snapshots #10152, HUD/local-player state #10151, entity types
-#10150. Registry listing stays deferred per the LGPL review policy above until masa
-grants source review.
+## Horizon API gaps and degradation notes (2026-11-05)
+1. Ghost blocks draw as translucent filled boxes with white outlines (native_world_primitives
+   filled_box + box_outline, .through_walls(), 128-block cap). Upstream Litematica renders the actual
+   translucent block model per ghost block; Horizon's native-mod API has no block-model world primitive,
+   so box outlines are the compromise. Per standing policy this gets an issue/PR on horizon-rust/horizon
+   proposing block-model world primitives (or accepting the box compromise); tracked until patched, then
+   the port upgrades to 1:1.
+2. Bundle pins Horizon revision 489a1334 (verified compiling). The public mod template still pins
+   3fb4c31, which predates the native_world_primitives hook entirely, so a fresh template-context build
+   of this bundle fails until the template bumps its pin. Same standing-policy issue tracks it.
