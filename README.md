@@ -30,8 +30,14 @@ unless masa grants it. Until then it ships from this repo for personal use; entr
 - [x] Phase 3: ghost-block overlay (overlay.rs logic, runtime.rs render glue via native_world_primitives,
       /litematica command hook: load <path> [x y z] / clear / status; 24/24 unit tests; compiles in-tree
       at Horizon 489a1334)
-- [ ] Phase 4: printer (placement legality via Horizon placement logic, bottom-up order)
-- [ ] Phase 5: selection tool, saving own .litematic, menus (M), hotkeys, pick-block, highlights
+- [x] Phase 4: printer (print_order bottom-up y,x,z + world-recheck pending filter; /litematica build
+      runtime glue places up to 64 blocks/tick with UPDATE_NEIGHBOURS|UPDATE_CLIENTS flags, /litematica
+      build stop / status; 42/42 unit tests)
+- [x] Phase 5 (core): /litematica save <path> (valid gzip .litematic, dependency-free stored-deflate
+      writer), /litematica savearea <x y z> <w h l> <path> (captures a live-world box), real gzipped
+      .litematic loading (dependency-free inflate: stored/fixed/dynamic Huffman), /litematica verify
+      [x y z] (per-region mismatch report vs the live world)
+- [ ] Phase 5 (rest): selection tool, menus (M), hotkeys, pick-block, highlights; /litematica materials
 
 ## Horizon API gaps and degradation notes (2026-11-05)
 1. Ghost blocks draw as translucent filled boxes with white outlines (native_world_primitives

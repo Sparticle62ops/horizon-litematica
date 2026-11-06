@@ -5,7 +5,7 @@ priority = 100
 
 # The commit it was built and tested on.
 [compatibility]
-horizon_revision = "3fb4c3138e0c5d8fdd2fdb555cf31368e8897497"
+horizon_revision = "764df32826a7f9997c4661f7a8df564f750a8986"
 
 [[module]]
 id = "runtime"
@@ -38,4 +38,13 @@ helper = "command_hook.rs"
 bindings = [
   { name = "command", ty = "&str", value = "command" },
   { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+[[injection]]
+id = "level_tick"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::Game<'_>::native_level_tick_post"
+helper = "tick_hook.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
 ]

@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "horizon-mod-litematica"
+name = "litematica_mod"
 version = "0.1.0"
