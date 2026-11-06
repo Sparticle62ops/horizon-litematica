@@ -134,6 +134,7 @@ static LAST_LOAD_ORIGIN: Mutex<[i32; 3]> = Mutex::new([0, 0, 0]);
 enum PendingWorldCmd {
     SaveArea { origin: [i32; 3], size: [i32; 3], path: String },
     ClipboardCopy { origin: [i32; 3], size: [i32; 3] },
+    CutClear { origin: [i32; 3], size: [i32; 3] },
     Verify { origin: [i32; 3] },
 }
 static PENDING: Mutex<Vec<PendingWorldCmd>> = Mutex::new(Vec::new());
@@ -177,6 +178,24 @@ pub fn on_command(command: &str, ran: &mut bool) {
             litematica_mod::commands::ClipboardSub::List => {
                 log::info!("{}", litematica_mod::commands::clipboard_report())
             }
+        }
+        Command::Paste { at } => match litematica_mod::commands::clipboard_snapshot() {
+            Some(clip) => {
+                let at = at.unwrap_or(clip.origin);
+                let ghosts = litematica_mod::commands::paste_ghosts(&clip, at);
+                start_print_from(ghosts);
+            }
+            None => log::info!("litematica clipboard: empty"),
+        }
+        Command::Cut => match litematica_mod::commands::selection_box() {
+            Ok((origin, size)) => {
+                if let Ok(mut q) = PENDING.lock() {
+                    q.push(PendingWorldCmd::ClipboardCopy { origin, size });
+                    q.push(PendingWorldCmd::CutClear { origin, size });
+                }
+                log::info!("litematica: cut queued (copies the box, then clears it next tick)");
+            }
+            Err(e) => log::info!("litematica: {}", e),
         }
         Command::SaveAreaFromSelection { path } => {
             match litematica_mod::commands::selection_box() {
@@ -266,6 +285,12 @@ static STATE_CACHE: Mutex<Vec<(String, BlockStateId)>> = Mutex::new(Vec::new());
 /// Queue the active overlay for printing (bottom-up build order).
 pub fn start_print() {
     let ghosts = CURRENT.lock().map(|v| v.clone()).unwrap_or_default();
+    start_print_from(ghosts);
+}
+
+/// Queue a print from an arbitrary ghost list (paste and cut reuse the
+/// printer without touching the loaded schematic overlay).
+pub fn start_print_from(ghosts: Vec<GhostBlock>) {
     let steps = print_order_ghosts(&ghosts);
     let total = steps.len();
     if let Ok(mut q) = PRINT_QUEUE.lock() {
@@ -389,6 +414,9 @@ impl crate::game::Game<'_> {
                         Ok(summary) => log::info!("litematica verify: {}", summary),
                         Err(e) => log::info!("litematica: {}", e),
                     }
+                }
+                PendingWorldCmd::CutClear { origin, size } => {
+                    start_print_from(litematica_mod::commands::air_ghosts(origin, size));
                 }
                 PendingWorldCmd::ClipboardCopy { origin, size } => {
                     match self.read_area_states(origin, size) {

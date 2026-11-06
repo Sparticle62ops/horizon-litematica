@@ -5,6 +5,7 @@ use crate::litematic::Schematic;
 use std::sync::Mutex;
 use crate::litematic::gzip_stored;
 use crate::overlay::overlay_for;
+use crate::overlay::{GhostBlock, OverlayKind};
 use crate::placements::Placement;
 
 /// One parsed /litematica command.
@@ -29,6 +30,11 @@ pub enum Command {
     Select { sub: SelectSub },
     /// Phase 5 clipboard: copy the selection box, or show what it holds.
     Clipboard { sub: ClipboardSub },
+    /// Phase 5 clipboard: paste the clipboard at a position (default:
+    /// where it was copied).
+    Paste { at: Option<[i32; 3]> },
+    /// Phase 5 clipboard: copy the selection box, then clear it to air.
+    Cut,
 }
 
 /// One /litematica select sub-command.
@@ -96,6 +102,25 @@ pub fn parse_command(rest: &str) -> Option<Command> {
             _ => return None,
         };
         return Some(Command::Clipboard { sub });
+    }
+    if let Some(args) = rest.strip_prefix("paste") {
+        let mut parts = args.trim().split_whitespace();
+        let at = match parts.next() {
+            None => None,
+            Some(t) => {
+                let x: i32 = t.parse().ok()?;
+                let y: i32 = parts.next()?.parse().ok()?;
+                let z: i32 = parts.next()?.parse().ok()?;
+                if parts.next().is_some() {
+                    return None;
+                }
+                Some([x, y, z])
+            }
+        };
+        return Some(Command::Paste { at });
+    }
+    if rest == "cut" {
+        return Some(Command::Cut);
     }
     if rest == "materials" {
         return Some(Command::Materials);
@@ -279,6 +304,46 @@ pub fn clipboard_report() -> String {
         },
         Err(_) => "litematica: clipboard state poisoned".to_string(),
     }
+}
+
+/// Ghost blocks for pasting `clip` with its min corner at `at`, row-major
+/// (y, z, x) like the world read; air rows paste as air.
+pub fn paste_ghosts(clip: &Clipboard, at: [i32; 3]) -> Vec<GhostBlock> {
+    let (w, l) = (clip.size[0], clip.size[2]);
+    clip.states
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let i = i as i32;
+            let x = i % w;
+            let z = (i / w) % l;
+            let y = i / (w * l);
+            GhostBlock {
+                world: (at[0] + x, at[1] + y, at[2] + z),
+                kind: OverlayKind::Missing,
+                state_key: s.clone().unwrap_or_else(|| "minecraft:air".to_string()),
+            }
+        })
+        .collect()
+}
+
+/// Ghost blocks that clear a box to air (the clearing half of cut).
+pub fn air_ghosts(origin: [i32; 3], size: [i32; 3]) -> Vec<GhostBlock> {
+    let (w, h, l) = (size[0], size[1], size[2]);
+    let n = (w as i64) * (h as i64) * (l as i64);
+    (0..n)
+        .map(|i| {
+            let i = i as i32;
+            let x = i % w;
+            let z = (i / w) % l;
+            let y = i / (w * l);
+            GhostBlock {
+                world: (origin[0] + x, origin[1] + y, origin[2] + z),
+                kind: OverlayKind::Missing,
+                state_key: "minecraft:air".to_string(),
+            }
+        })
+        .collect()
 }
 
 /// The live selection box (phase 5). Corners default to nothing set.
@@ -547,6 +612,36 @@ mod tests {
         let rep = clipboard_report();
         assert!(rep.contains("2x1x1 from (1, 2, 3)"), "{rep}");
         assert!(clipboard_snapshot().is_some());
+    }
+
+
+    #[test]
+    fn paste_parse_and_ghosts() {
+        assert!(matches!(
+            parse_command(" paste"),
+            Some(Command::Paste { at: None })
+        ));
+        assert!(matches!(
+            parse_command(" paste 1 2 3"),
+            Some(Command::Paste { at: Some([1, 2, 3]) })
+        ));
+        assert!(parse_command(" paste 1 2").is_none());
+        assert!(matches!(parse_command(" cut"), Some(Command::Cut)));
+        let clip = Clipboard {
+            origin: [0, 0, 0],
+            size: [2, 1, 1],
+            states: vec![Some("minecraft:stone".to_string()), None],
+        };
+        let g = paste_ghosts(&clip, [5, 6, 7]);
+        assert_eq!(g.len(), 2);
+        assert_eq!(g[0].world, (5, 6, 7));
+        assert_eq!(g[0].state_key, "minecraft:stone");
+        assert_eq!(g[1].world, (6, 6, 7));
+        assert_eq!(g[1].state_key, "minecraft:air");
+        let a = air_ghosts([1, 2, 3], [2, 2, 1]);
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[3].world, (2, 3, 3));
+        assert!(a.iter().all(|x| x.state_key == "minecraft:air"));
     }
 
 }
