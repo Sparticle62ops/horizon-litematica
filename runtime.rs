@@ -126,6 +126,17 @@ mod tests {
     }
 }
 
+/// The origin the last loaded schematic was placed at (bare verify re-checks it).
+static LAST_LOAD_ORIGIN: Mutex<[i32; 3]> = Mutex::new([0, 0, 0]);
+
+/// A world-reading command waiting for the next level tick (the command hook
+/// has no Game access, so verify and save-area run there, like the printer).
+enum PendingWorldCmd {
+    SaveArea { origin: [i32; 3], size: [i32; 3], path: String },
+    Verify { origin: [i32; 3] },
+}
+static PENDING: Mutex<Vec<PendingWorldCmd>> = Mutex::new(Vec::new());
+
 /// The command hook: runs /litematica commands, claims only ours (any other
 /// command passes through untouched, ran stays false).
 pub fn on_command(command: &str, ran: &mut bool) {
@@ -145,20 +156,23 @@ pub fn on_command(command: &str, ran: &mut bool) {
             let _ = save_loaded_schematic(&path);
         }
         Command::SaveArea { origin, size, path } => {
-            let _ = save_area_from_world(self, origin, size, &path);
+            if let Ok(mut q) = PENDING.lock() {
+                q.push(PendingWorldCmd::SaveArea { origin, size, path });
+            }
+            log::info!("litematica: savearea queued (runs next tick)");
         }
         Command::Verify { origin } => {
             let o = match origin {
                 Some(o) => o,
                 None => *LAST_LOAD_ORIGIN.lock().unwrap_or_else(|p| p.into_inner()),
             };
-            match verify_area_from_world(self, (o[0], o[1], o[2])) {
-                Ok(summary) => log::info!("litematica verify: {}", summary),
-                Err(e) => log::info!("litematica: {}", e),
+            if let Ok(mut q) = PENDING.lock() {
+                q.push(PendingWorldCmd::Verify { origin: o });
             }
+            log::info!("litematica: verify queued (runs next tick)");
         }
         Command::Materials => {
-            match commands::materials_report() {
+            match litematica_mod::commands::materials_report() {
                 Some((total, lines)) => {
                     log::info!("litematica materials: {} total blocks, {} states", total, lines.len());
                     for l in lines.iter().take(50) {
@@ -173,7 +187,7 @@ pub fn on_command(command: &str, ran: &mut bool) {
         }
         Command::Load { path, origin } => {
             if let Ok(mut o) = LAST_LOAD_ORIGIN.lock() {
-                *o = origin;
+                *o = [origin.0, origin.1, origin.2];
             }
             let _ = load_schematic_file(&path, origin);
         }
@@ -261,6 +275,7 @@ impl crate::game::Game<'_> {
         if self.serving.is_none() && self.options.dedicated.is_none() {
             return;
         }
+        self.drain_pending();
         let steps: Vec<PrintStep> = match PRINT_QUEUE.lock() {
             Ok(mut q) => {
                 if q.is_empty() {
@@ -319,5 +334,139 @@ impl crate::game::Game<'_> {
             cache.push((key.to_string(), id));
         }
         Some(id)
+    }
+}
+
+impl crate::game::Game<'_> {
+    /// World-reading commands queued by the command hook, executed here where
+    /// the Game is in hand.
+    pub fn drain_pending(&mut self) {
+        let pending = match PENDING.lock() {
+            Ok(mut q) => std::mem::take(&mut *q),
+            Err(_) => return,
+        };
+        for cmd in pending {
+            match cmd {
+                PendingWorldCmd::Verify { origin } => {
+                    match self.verify_area_from_world((origin[0], origin[1], origin[2])) {
+                        Ok(summary) => log::info!("litematica verify: {}", summary),
+                        Err(e) => log::info!("litematica: {}", e),
+                    }
+                }
+                PendingWorldCmd::SaveArea { origin, size, path } => {
+                    match self.save_area_from_world(origin, size, &path) {
+                        Ok(n) => log::info!("litematica savearea: wrote {} region(s) to {}", n, path),
+                        Err(e) => log::info!("litematica: {}", e),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compare the last loaded schematic (placed at `origin`) against the live
+    /// world. Every non-air expected block whose state resolves is checked;
+    /// unresolved states are skipped. Live blocks that did not load read as
+    /// air (id 0), which reports as missing.
+    pub fn verify_area_from_world(&self, origin: (i32, i32, i32)) -> Result<String, String> {
+        let sch = litematica_mod::commands::last_schematic().ok_or_else(|| "litematica: nothing loaded".to_string())?;
+        let mut checked = 0u64;
+        let mut wrong = 0u64;
+        let mut missing = 0u64;
+        let mut details: Vec<String> = Vec::new();
+        for (name, region) in &sch.regions {
+            let (w, h, l) = region.dims();
+            for y in 0..h {
+                for z in 0..l {
+                    for x in 0..w {
+                        let state = region.get(x, y, z);
+                        if state.name == "minecraft:air" && state.properties.is_empty() {
+                            continue;
+                        }
+                        let key = state.key();
+                        let Some(target) = self.litematica_state_id(&key) else {
+                            continue;
+                        };
+                        let wx = origin.0 + x as i32;
+                        let wy = origin.1 + y as i32;
+                        let wz = origin.2 + z as i32;
+                        let live = self.world.block(wx, wy, wz).0;
+                        checked += 1;
+                        if live == target.0 {
+                            continue;
+                        }
+                        if live == 0 {
+                            missing += 1;
+                        } else {
+                            wrong += 1;
+                        }
+                        if details.len() < 5 {
+                            details.push(format!(
+                                "{} @ ({}, {}, {}): expected {}, found id {}",
+                                name, wx, wy, wz, key, live
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if details.is_empty() {
+            Ok(format!("{} checked, all match", checked))
+        } else {
+            Ok(format!(
+                "{} checked, {} wrong, {} missing; first details:\n  {}",
+                checked, wrong, missing, details.join("\n  ")
+            ))
+        }
+    }
+
+    /// Capture a live-world box into a gzipped .litematic file. Block ids map
+    /// back to state keys through the game's block registry.
+    pub fn save_area_from_world(&self, origin: [i32; 3], size: [i32; 3], path: &str) -> Result<usize, String> {
+        let (w, h, l) = (size[0], size[1], size[2]);
+        if w <= 0 || h <= 0 || l <= 0 {
+            return Err("litematica: size must be positive".to_string());
+        }
+        if w as i64 * h as i64 * l as i64 > 8_388_608 {
+            return Err("litematica: box too large (cap 8,388,608 blocks)".to_string());
+        }
+        let registry = &self.pack.assets.registry;
+        let mut keys: Vec<Option<String>> = Vec::new();
+        for y in 0..h {
+            for z in 0..l {
+                for x in 0..w {
+                    let id = self.world.block(origin[0] + x, origin[1] + y, origin[2] + z).0;
+                    let key = match registry.state(horizon_world::registry::BlockStateId(id)) {
+                        Some(st) => {
+                            let mut key = st.name.clone();
+                            if !st.properties.is_empty() {
+                                let parts: Vec<String> = st
+                                    .properties
+                                    .iter()
+                                    .map(|(k, v)| format!("{}={}", k, v))
+                                    .collect();
+                                key = format!("{}[{}]", key, parts.join(","));
+                            }
+                            key
+                        }
+                        None => "minecraft:air".to_string(),
+                    };
+                    if key == "minecraft:air" {
+                        keys.push(None);
+                    } else {
+                        keys.push(Some(key));
+                    }
+                }
+            }
+        }
+        let sch = litematica_mod::litematic::schematic_from_states(
+            "savearea",
+            (origin[0], origin[1], origin[2]),
+            (w, h, l),
+            &keys,
+        )
+        .ok_or_else(|| "litematica: could not build the schematic from the world".to_string())?;
+        let bytes = litematica_mod::litematic::gzip_stored(&sch.to_bytes());
+        std::fs::write(path, &bytes).map_err(|e| format!("litematica: cannot write {path}: {e}"))?;
+        Ok(1usize)
     }
 }

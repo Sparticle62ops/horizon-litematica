@@ -371,7 +371,7 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
 
 /// gzip writer using stored (uncompressed) deflate blocks, so the crate
 /// stays dependency-free while producing a valid gzip stream.
-pub(crate) fn gzip_stored(data: &[u8]) -> Vec<u8> {
+pub fn gzip_stored(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff];
     if data.is_empty() {
         out.extend_from_slice(&[0x01, 0x00, 0x00, 0xff, 0xff]);
