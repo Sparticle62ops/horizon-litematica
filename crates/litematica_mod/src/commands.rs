@@ -21,6 +21,8 @@ pub enum Command {
     Save { path: String },
     SaveArea { origin: [i32; 3], size: [i32; 3], path: String },
     Verify { origin: Option<[i32; 3]> },
+    /// Summarize what the loaded schematic needs, by block state.
+    Materials,
 }
 
 /// Parse a /litematica command body: "load <path> [x y z]", "clear",
@@ -53,6 +55,9 @@ pub fn parse_command(rest: &str) -> Option<Command> {
             return None;
         }
         return Some(Command::SaveArea { origin: [x, y, z], size: [w, h, l], path });
+    }
+    if rest == "materials" {
+        return Some(Command::Materials);
     }
     if rest == "verify" {
         return Some(Command::Verify { origin: None });
@@ -133,8 +138,59 @@ pub fn save_loaded_schematic(path: &str) -> Result<usize, String> {
 }
 
 
+/// Build the materials report for the last loaded schematic: a total block
+/// count plus one "state: count" line per needed block state, sorted by state
+/// key. None when nothing is loaded.
+pub fn materials_report() -> Option<(u64, Vec<String>)> {
+    let sch = LAST_SCHEMATIC
+        .lock()
+        .ok()?
+        .clone()?;
+    let lines = crate::materials::material_list(&sch)
+        .into_iter()
+        .map(|l| format!("{}: {}", l.state, l.count))
+        .collect();
+    Some((crate::materials::total_blocks(&sch), lines))
+}
+
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn materials_report_needs_a_loaded_schematic() {
+        if let Ok(mut l) = LAST_SCHEMATIC.lock() {
+            *l = None;
+        }
+        assert!(materials_report().is_none());
+    }
+
+    #[test]
+    fn materials_report_counts_non_air_states_sorted() {
+        use crate::litematic::{BlockState, Region, Schematic};
+        use std::collections::BTreeMap;
+        fn state(name: &str) -> BlockState {
+            BlockState { name: name.into(), properties: BTreeMap::new() }
+        }
+        let mut sch = Schematic::new("t", "a", "g", 0);
+        sch.add_region(
+            "r",
+            Region {
+                position: (0, 0, 0),
+                size: (3, 1, 1),
+                palette: vec![state("minecraft:stone"), state("minecraft:air")],
+                blocks: vec![0, 1, 0],
+                tile_entities: Vec::new(),
+                entities: Vec::new(),
+            },
+        );
+        if let Ok(mut l) = LAST_SCHEMATIC.lock() {
+            *l = Some(sch);
+        }
+        let (total, lines) = materials_report().expect("loaded");
+        assert_eq!(total, 2, "air must not be counted");
+        assert_eq!(lines, vec!["minecraft:stone: 2".to_string()]);
+    }
+
     use super::*;
 
     #[test]

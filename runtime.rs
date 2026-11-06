@@ -157,6 +157,20 @@ pub fn on_command(command: &str, ran: &mut bool) {
                 Err(e) => log::info!("litematica: {}", e),
             }
         }
+        Command::Materials => {
+            match commands::materials_report() {
+                Some((total, lines)) => {
+                    log::info!("litematica materials: {} total blocks, {} states", total, lines.len());
+                    for l in lines.iter().take(50) {
+                        log::info!("litematica materials: {}", l);
+                    }
+                    if lines.len() > 50 {
+                        log::info!("litematica materials: ... {} more states", lines.len() - 50);
+                    }
+                }
+                None => log::info!("litematica: nothing loaded"),
+            }
+        }
         Command::Load { path, origin } => {
             if let Ok(mut o) = LAST_LOAD_ORIGIN.lock() {
                 *o = origin;
