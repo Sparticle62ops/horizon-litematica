@@ -23,6 +23,17 @@ pub enum Command {
     Verify { origin: Option<[i32; 3]> },
     /// Summarize what the loaded schematic needs, by block state.
     Materials,
+    /// Phase 5 selection: set/inspect the selection box corners.
+    Select { sub: SelectSub },
+}
+
+/// One /litematica select sub-command.
+#[derive(Debug, PartialEq)]
+pub enum SelectSub {
+    Pos1([i32; 3]),
+    Pos2([i32; 3]),
+    Clear,
+    Show,
 }
 
 /// Parse a /litematica command body: "load <path> [x y z]", "clear",
@@ -58,6 +69,43 @@ pub fn parse_command(rest: &str) -> Option<Command> {
     }
     if rest == "materials" {
         return Some(Command::Materials);
+    }
+    if let Some(args) = rest.strip_prefix("select") {
+        let mut parts = args.trim().split_whitespace();
+        let sub = match parts.next()? {
+            "pos1" => {
+                let x: i32 = parts.next()?.parse().ok()?;
+                let y: i32 = parts.next()?.parse().ok()?;
+                let z: i32 = parts.next()?.parse().ok()?;
+                if parts.next().is_some() {
+                    return None;
+                }
+                SelectSub::Pos1([x, y, z])
+            }
+            "pos2" => {
+                let x: i32 = parts.next()?.parse().ok()?;
+                let y: i32 = parts.next()?.parse().ok()?;
+                let z: i32 = parts.next()?.parse().ok()?;
+                if parts.next().is_some() {
+                    return None;
+                }
+                SelectSub::Pos2([x, y, z])
+            }
+            "clear" => {
+                if parts.next().is_some() {
+                    return None;
+                }
+                SelectSub::Clear
+            }
+            "show" => {
+                if parts.next().is_some() {
+                    return None;
+                }
+                SelectSub::Show
+            }
+            _ => return None,
+        };
+        return Some(Command::Select { sub });
     }
     if rest == "verify" {
         return Some(Command::Verify { origin: None });
@@ -154,6 +202,77 @@ pub fn materials_report() -> Option<(u64, Vec<String>)> {
 }
 
 
+/// The live selection box (phase 5). Corners default to nothing set.
+pub static SELECTION: Mutex<Selection> = Mutex::new(Selection { pos1: None, pos2: None });
+
+#[derive(Debug, Default)]
+pub struct Selection {
+    pub pos1: Option<[i32; 3]>,
+    pub pos2: Option<[i32; 3]>,
+}
+
+/// Set (or clear) one selection corner; returns a short human summary.
+pub fn selection_set(corner: usize, pos: Option<[i32; 3]>) -> String {
+    let Ok(mut sel) = SELECTION.lock() else {
+        return "litematica: selection state poisoned".to_string();
+    };
+    match (corner, pos) {
+        (1, Some(p)) => {
+            sel.pos1 = Some(p);
+            format!("litematica: pos1 set to ({}, {}, {})", p[0], p[1], p[2])
+        }
+        (2, Some(p)) => {
+            sel.pos2 = Some(p);
+            format!("litematica: pos2 set to ({}, {}, {})", p[0], p[1], p[2])
+        }
+        _ => {
+            *sel = Selection::default();
+            "litematica: selection cleared".to_string()
+        }
+    }
+}
+
+/// The selection as (min corner, size), both corners set and size positive.
+pub fn selection_box() -> Result<([i32; 3], [i32; 3]), String> {
+    let sel = SELECTION.lock().map_err(|_| "litematica: selection state poisoned".to_string())?;
+    let (Some(a), Some(b)) = (sel.pos1, sel.pos2) else {
+        return Err("litematica: selection incomplete (set pos1 and pos2)".to_string());
+    };
+    let min = [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])];
+    let size = [
+        (a[0] - b[0]).abs() + 1,
+        (a[1] - b[1]).abs() + 1,
+        (a[2] - b[2]).abs() + 1,
+    ];
+    if size.iter().any(|&s| s <= 0) {
+        return Err("litematica: selection is empty".to_string());
+    }
+    Ok((min, size))
+}
+
+/// Human description of the current selection, for /litematica select show.
+pub fn selection_report() -> String {
+    let Ok(sel) = SELECTION.lock() else {
+        return "litematica: selection state poisoned".to_string();
+    };
+    match (sel.pos1, sel.pos2) {
+        (Some(a), Some(b)) => {
+            let size = [
+                (a[0] - b[0]).abs() + 1,
+                (a[1] - b[1]).abs() + 1,
+                (a[2] - b[2]).abs() + 1,
+            ];
+            format!(
+                "litematica selection: pos1 ({}, {}, {}), pos2 ({}, {}, {}), {}x{}x{}",
+                a[0], a[1], a[2], b[0], b[1], b[2], size[0], size[1], size[2]
+            )
+        }
+        (Some(a), None) => format!("litematica selection: pos1 ({}, {}, {}), pos2 unset", a[0], a[1], a[2]),
+        (None, Some(b)) => format!("litematica selection: pos1 unset, pos2 ({}, {}, {})", b[0], b[1], b[2]),
+        (None, None) => "litematica selection: empty".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -192,6 +311,51 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn parses_select_subs() {
+        assert_eq!(
+            parse_command("select pos1 1 2 3"),
+            Some(Command::Select { sub: SelectSub::Pos1([1, 2, 3]) })
+        );
+        assert_eq!(
+            parse_command("select pos2 -4 5 6"),
+            Some(Command::Select { sub: SelectSub::Pos2([-4, 5, 6]) })
+        );
+        assert_eq!(
+            parse_command("select clear"),
+            Some(Command::Select { sub: SelectSub::Clear })
+        );
+        assert_eq!(
+            parse_command("select show"),
+            Some(Command::Select { sub: SelectSub::Show })
+        );
+        assert_eq!(parse_command("select"), None);
+        assert_eq!(parse_command("select pos1 1 2"), None);
+        assert_eq!(parse_command("select pos1 1 2 3 4"), None);
+        assert_eq!(parse_command("select bogus"), None);
+    }
+
+    #[test]
+    fn selection_box_min_size_and_errors() {
+        assert_eq!(selection_set(1, Some([5, -2, 9])), "litematica: pos1 set to (5, -2, 9)");
+        assert_eq!(selection_set(2, Some([1, 3, 4])), "litematica: pos2 set to (1, 3, 4)");
+        let (min, size) = selection_box().unwrap();
+        assert_eq!(min, [1, -2, 4]);
+        assert_eq!(size, [5, 6, 6]);
+        // same corner twice is a 1x1x1 box
+        assert_eq!(selection_set(1, Some([2, 2, 2])), "litematica: pos1 set to (2, 2, 2)");
+        assert_eq!(selection_set(2, Some([2, 2, 2])), "litematica: pos2 set to (2, 2, 2)");
+        assert_eq!(selection_box().unwrap(), ([2, 2, 2], [1, 1, 1]));
+        // report and clear
+        assert_eq!(selection_report(), "litematica selection: pos1 (2, 2, 2), pos2 (2, 2, 2), 1x1x1");
+        assert_eq!(selection_set(1, None), "litematica: selection cleared");
+        assert_eq!(selection_report(), "litematica selection: empty");
+        assert!(selection_box().is_err());
+        assert_eq!(selection_set(2, Some([0, 0, 0])), "litematica: pos2 set to (0, 0, 0)");
+        assert_eq!(selection_report(), "litematica selection: pos1 unset, pos2 (0, 0, 0)");
+        assert!(selection_box().is_err());
+    }
 
     #[test]
     fn parses_load_with_and_without_origin() {

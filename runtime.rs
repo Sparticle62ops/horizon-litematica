@@ -14,7 +14,7 @@
 use std::sync::Mutex;
 
 use litematica_mod::overlay::{color_for, GhostBlock};
-use litematica_mod::commands::{load_schematic_file, save_loaded_schematic, parse_command, Command};
+use litematica_mod::commands::{load_schematic_file, save_loaded_schematic, parse_command, Command, SelectSub};
 use litematica_mod::printer::{PrintStep, print_order_ghosts};
 use horizon_client::command::{Reader, block};
 use horizon_world::registry::BlockStateId;
@@ -170,6 +170,15 @@ pub fn on_command(command: &str, ran: &mut bool) {
                 q.push(PendingWorldCmd::Verify { origin: o });
             }
             log::info!("litematica: verify queued (runs next tick)");
+        }
+        Command::Select { sub } => {
+            let msg = match sub {
+                SelectSub::Pos1(p) => litematica_mod::commands::selection_set(1, Some(p)),
+                SelectSub::Pos2(p) => litematica_mod::commands::selection_set(2, Some(p)),
+                SelectSub::Clear => litematica_mod::commands::selection_set(1, None),
+                SelectSub::Show => litematica_mod::commands::selection_report(),
+            };
+            log::info!("{}", msg);
         }
         Command::Materials => {
             match litematica_mod::commands::materials_report() {
