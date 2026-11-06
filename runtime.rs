@@ -133,6 +133,7 @@ static LAST_LOAD_ORIGIN: Mutex<[i32; 3]> = Mutex::new([0, 0, 0]);
 /// has no Game access, so verify and save-area run there, like the printer).
 enum PendingWorldCmd {
     SaveArea { origin: [i32; 3], size: [i32; 3], path: String },
+    ClipboardCopy { origin: [i32; 3], size: [i32; 3] },
     Verify { origin: [i32; 3] },
 }
 static PENDING: Mutex<Vec<PendingWorldCmd>> = Mutex::new(Vec::new());
@@ -160,6 +161,22 @@ pub fn on_command(command: &str, ran: &mut bool) {
                 q.push(PendingWorldCmd::SaveArea { origin, size, path });
             }
             log::info!("litematica: savearea queued (runs next tick)");
+        }
+        Command::Clipboard { sub } => match sub {
+            litematica_mod::commands::ClipboardSub::Copy => {
+                match litematica_mod::commands::selection_box() {
+                    Ok((origin, size)) => {
+                        if let Ok(mut q) = PENDING.lock() {
+                            q.push(PendingWorldCmd::ClipboardCopy { origin, size });
+                        }
+                        log::info!("litematica: clipboard copy queued (runs next tick)");
+                    }
+                    Err(e) => log::info!("litematica: {}", e),
+                }
+            }
+            litematica_mod::commands::ClipboardSub::List => {
+                log::info!("{}", litematica_mod::commands::clipboard_report())
+            }
         }
         Command::SaveAreaFromSelection { path } => {
             match litematica_mod::commands::selection_box() {
@@ -373,6 +390,15 @@ impl crate::game::Game<'_> {
                         Err(e) => log::info!("litematica: {}", e),
                     }
                 }
+                PendingWorldCmd::ClipboardCopy { origin, size } => {
+                    match self.read_area_states(origin, size) {
+                        Ok(states) => log::info!(
+                            "{}",
+                            litematica_mod::commands::clipboard_store(origin, size, states)
+                        ),
+                        Err(e) => log::info!("litematica: {}", e),
+                    }
+                }
                 PendingWorldCmd::SaveArea { origin, size, path } => {
                     match self.save_area_from_world(origin, size, &path) {
                         Ok(n) => log::info!("litematica savearea: wrote {} region(s) to {}", n, path),
@@ -441,7 +467,13 @@ impl crate::game::Game<'_> {
 
     /// Capture a live-world box into a gzipped .litematic file. Block ids map
     /// back to state keys through the game's block registry.
-    pub fn save_area_from_world(&self, origin: [i32; 3], size: [i32; 3], path: &str) -> Result<usize, String> {
+    /// Read a box of world block-state keys, row-major (y, z, x); None = air.
+    /// Shared by save-area and the clipboard copy.
+    pub fn read_area_states(
+        &self,
+        origin: [i32; 3],
+        size: [i32; 3],
+    ) -> Result<Vec<Option<String>>, String> {
         let (w, h, l) = (size[0], size[1], size[2]);
         if w <= 0 || h <= 0 || l <= 0 {
             return Err("litematica: size must be positive".to_string());
@@ -478,6 +510,18 @@ impl crate::game::Game<'_> {
                 }
             }
         }
+        Ok(keys)
+    }
+
+    pub fn save_area_from_world(&self, origin: [i32; 3], size: [i32; 3], path: &str) -> Result<usize, String> {
+        let (w, h, l) = (size[0], size[1], size[2]);
+        if w <= 0 || h <= 0 || l <= 0 {
+            return Err("litematica: size must be positive".to_string());
+        }
+        if w as i64 * h as i64 * l as i64 > 8_388_608 {
+            return Err("litematica: box too large (cap 8,388,608 blocks)".to_string());
+        }
+        let keys = self.read_area_states(origin, size)?;
         let sch = litematica_mod::litematic::schematic_from_states(
             "savearea",
             (origin[0], origin[1], origin[2]),

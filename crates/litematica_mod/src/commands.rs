@@ -27,6 +27,8 @@ pub enum Command {
     Materials,
     /// Phase 5 selection: set/inspect the selection box corners.
     Select { sub: SelectSub },
+    /// Phase 5 clipboard: copy the selection box, or show what it holds.
+    Clipboard { sub: ClipboardSub },
 }
 
 /// One /litematica select sub-command.
@@ -36,6 +38,15 @@ pub enum SelectSub {
     Pos2([i32; 3]),
     Clear,
     Show,
+}
+
+/// One /litematica clipboard sub-command.
+#[derive(Debug, PartialEq)]
+pub enum ClipboardSub {
+    /// Copy the current selection box into the clipboard.
+    Copy,
+    /// Show what the clipboard holds.
+    List,
 }
 
 /// Parse a /litematica command body: "load <path> [x y z]", "clear",
@@ -76,6 +87,15 @@ pub fn parse_command(rest: &str) -> Option<Command> {
             return None;
         }
         return Some(Command::SaveAreaFromSelection { path: first.to_string() });
+    }
+    if let Some(args) = rest.strip_prefix("clipboard") {
+        let sub = match args.trim() {
+            "copy" => ClipboardSub::Copy,
+            "list" => ClipboardSub::List,
+            "" => ClipboardSub::List,
+            _ => return None,
+        };
+        return Some(Command::Clipboard { sub });
     }
     if rest == "materials" {
         return Some(Command::Materials);
@@ -211,6 +231,55 @@ pub fn materials_report() -> Option<(u64, Vec<String>)> {
     Some((crate::materials::total_blocks(&sch), lines))
 }
 
+
+/// The clipboard (phase 5): one copied region of block states, ready to paste.
+static CLIPBOARD: Mutex<Option<Clipboard>> = Mutex::new(None);
+
+/// One copied region: its min corner, size, and row-major (y, z, x) states
+/// (None = air).
+#[derive(Clone)]
+pub struct Clipboard {
+    pub origin: [i32; 3],
+    pub size: [i32; 3],
+    pub states: Vec<Option<String>>,
+}
+
+/// Store a copied region (the world read runs in the runtime, which holds the
+/// Game); returns a short human summary.
+pub fn clipboard_store(origin: [i32; 3], size: [i32; 3], states: Vec<Option<String>>) -> String {
+    let live = states.iter().filter(|s| s.is_some()).count();
+    match CLIPBOARD.lock() {
+        Ok(mut c) => {
+            *c = Some(Clipboard { origin, size, states });
+            format!(
+                "litematica clipboard: copied {}x{}x{} ({} live blocks)",
+                size[0], size[1], size[2], live
+            )
+        }
+        Err(_) => "litematica: clipboard state poisoned".to_string(),
+    }
+}
+
+/// A snapshot of the clipboard, for paste.
+pub fn clipboard_snapshot() -> Option<Clipboard> {
+    CLIPBOARD.lock().ok().and_then(|c| c.clone())
+}
+
+/// Human description of the clipboard, for /litematica clipboard list.
+pub fn clipboard_report() -> String {
+    match CLIPBOARD.lock() {
+        Ok(guard) => match &*guard {
+            Some(c) => format!(
+                "litematica clipboard: {}x{}x{} from ({}, {}, {}), {} live blocks",
+                c.size[0], c.size[1], c.size[2],
+                c.origin[0], c.origin[1], c.origin[2],
+                c.states.iter().filter(|s| s.is_some()).count()
+            ),
+            None => "litematica clipboard: empty".to_string(),
+        },
+        Err(_) => "litematica: clipboard state poisoned".to_string(),
+    }
+}
 
 /// The live selection box (phase 5). Corners default to nothing set.
 pub static SELECTION: Mutex<Selection> = Mutex::new(Selection { pos1: None, pos2: None });
@@ -454,6 +523,30 @@ mod tests {
             parse_command(" savearea 1 2 3 4 5 6 out.litematic"),
             Some(Command::SaveArea { origin: [1, 2, 3], size: [4, 5, 6], path }) if path == "out.litematic"
         ));
+    }
+
+
+    #[test]
+    fn clipboard_parse_and_store() {
+        assert!(matches!(
+            parse_command(" clipboard copy"),
+            Some(Command::Clipboard { sub: ClipboardSub::Copy })
+        ));
+        assert!(matches!(
+            parse_command(" clipboard"),
+            Some(Command::Clipboard { sub: ClipboardSub::List })
+        ));
+        assert!(parse_command(" clipboard nope").is_none());
+        let msg = clipboard_store(
+            [1, 2, 3],
+            [2, 1, 1],
+            vec![None, Some("minecraft:stone".to_string())],
+        );
+        assert!(msg.contains("2x1x1"), "{msg}");
+        assert!(msg.contains("1 live"), "{msg}");
+        let rep = clipboard_report();
+        assert!(rep.contains("2x1x1 from (1, 2, 3)"), "{rep}");
+        assert!(clipboard_snapshot().is_some());
     }
 
 }
