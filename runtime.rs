@@ -161,6 +161,17 @@ pub fn on_command(command: &str, ran: &mut bool) {
             }
             log::info!("litematica: savearea queued (runs next tick)");
         }
+        Command::SaveAreaFromSelection { path } => {
+            match litematica_mod::commands::selection_box() {
+                Ok((origin, size)) => {
+                    if let Ok(mut q) = PENDING.lock() {
+                        q.push(PendingWorldCmd::SaveArea { origin, size, path });
+                    }
+                    log::info!("litematica: savearea (selection) queued (runs next tick)");
+                }
+                Err(e) => log::info!("litematica: {}", e),
+            }
+        }
         Command::Verify { origin } => {
             let o = match origin {
                 Some(o) => o,

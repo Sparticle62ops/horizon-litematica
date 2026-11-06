@@ -20,6 +20,8 @@ pub enum Command {
     /// Write the currently loaded schematic back out as a .litematic file.
     Save { path: String },
     SaveArea { origin: [i32; 3], size: [i32; 3], path: String },
+    /// Save the current selection box (no explicit geometry) as a .litematic.
+    SaveAreaFromSelection { path: String },
     Verify { origin: Option<[i32; 3]> },
     /// Summarize what the loaded schematic needs, by block state.
     Materials,
@@ -55,17 +57,25 @@ pub fn parse_command(rest: &str) -> Option<Command> {
     }
     if let Some(args) = rest.strip_prefix("savearea") {
         let mut parts = args.trim().split_whitespace();
-        let x: i32 = parts.next()?.parse().ok()?;
-        let y: i32 = parts.next()?.parse().ok()?;
-        let z: i32 = parts.next()?.parse().ok()?;
-        let w: i32 = parts.next()?.parse().ok()?;
-        let h: i32 = parts.next()?.parse().ok()?;
-        let l: i32 = parts.next()?.parse().ok()?;
-        let path = parts.next()?.to_string();
-        if parts.next().is_some() || w <= 0 || h <= 0 || l <= 0 {
+        let first = parts.next()?;
+        if first.parse::<i32>().is_ok() {
+            let x: i32 = first.parse().ok()?;
+            let y: i32 = parts.next()?.parse().ok()?;
+            let z: i32 = parts.next()?.parse().ok()?;
+            let w: i32 = parts.next()?.parse().ok()?;
+            let h: i32 = parts.next()?.parse().ok()?;
+            let l: i32 = parts.next()?.parse().ok()?;
+            let path = parts.next()?.to_string();
+            if parts.next().is_some() || w <= 0 || h <= 0 || l <= 0 {
+                return None;
+            }
+            return Some(Command::SaveArea { origin: [x, y, z], size: [w, h, l], path });
+        }
+        // No geometry: save the current selection box, `savearea <path>`.
+        if parts.next().is_some() {
             return None;
         }
-        return Some(Command::SaveArea { origin: [x, y, z], size: [w, h, l], path });
+        return Some(Command::SaveAreaFromSelection { path: first.to_string() });
     }
     if rest == "materials" {
         return Some(Command::Materials);
@@ -427,6 +437,23 @@ mod tests {
         let gz = gzip_stored(b"123456789");
         let crc = u32::from_le_bytes([gz[gz.len()-8], gz[gz.len()-7], gz[gz.len()-6], gz[gz.len()-5]]);
         assert_eq!(crc, 0xCBF4_3926);
+    }
+
+
+    #[test]
+    fn savearea_from_selection_parses() {
+        assert!(matches!(
+            parse_command(" savearea builds/tower.litematic"),
+            Some(Command::SaveAreaFromSelection { path }) if path == "builds/tower.litematic"
+        ));
+        // A lone number is ambiguous (path or geometry?), so it is rejected.
+        assert!(parse_command(" savearea 5").is_none());
+        assert!(parse_command(" savearea a b").is_none());
+        // The explicit-geometry form still parses as before.
+        assert!(matches!(
+            parse_command(" savearea 1 2 3 4 5 6 out.litematic"),
+            Some(Command::SaveArea { origin: [1, 2, 3], size: [4, 5, 6], path }) if path == "out.litematic"
+        ));
     }
 
 }
